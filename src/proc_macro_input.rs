@@ -1,44 +1,33 @@
-use crate::input::{Input, InputMatch, Range};
-use crate::proc_macro::{flatten, FlatToken, FlatTokenPat, Pat, Span, TokenStream};
-use indexing::{proof::Provable, Container, Index, Unknown};
-use std::ops::{self, Deref};
+use crate::input::{Input, InputMatch};
+use crate::proc_macro::Pat;
+use crate::proc_macro::{FlatTokenPat, Span, TokenStream};
+use flat_token::{flatten, FlatToken};
+use std::ops::Deref;
+use std::ops::Range;
 
 impl Input for TokenStream {
     type Container = Vec<FlatToken>;
     type Slice = [FlatToken];
-    type SourceInfo = ops::Range<Span>;
+    type SourceInfo = Range<Span>;
     type SourceInfoPoint = Span;
     fn to_container(self) -> Self::Container {
         let mut out = vec![];
         flatten(self, &mut out);
         out
     }
-    fn slice<'b, 'i>(
-        input: &'b Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> &'b Self::Slice {
-        &input[range.0]
+    fn slice<'b>(input: &'b Self::Container, range: Range<usize>) -> &'b Self::Slice {
+        &input[range]
     }
-    fn source_info<'i>(
-        input: &Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> Self::SourceInfo {
+
+    fn source_info(input: &Self::Container, range: Range<usize>) -> Self::SourceInfo {
         // FIXME(eddyb) should be joining up spans, but the API
         // for that is still "semver-exempt" in `proc-macro2`.
-        let last = range
-            .nonempty()
-            .map(|r| r.last().no_proof())
-            .unwrap_or(range.past_the_end());
-        Self::source_info_point(input, range.first())..Self::source_info_point(input, last)
+        Self::source_info_point(input, range.start)..Self::source_info_point(input, range.end)
     }
-    fn source_info_point<'i>(
-        input: &Container<'i, Self::Container>,
-        index: Index<'i, Unknown>,
-    ) -> Self::SourceInfoPoint {
+
+    fn source_info_point(input: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         // Try to get as much information as possible.
         let (before, after) = input.split_at(index);
-        let before = &input[before];
-        let after = &input[after];
         if let Some(first) = after.first() {
             first.span()
         } else if let Some(last) = before.last() {
@@ -49,6 +38,10 @@ impl Input for TokenStream {
             // (a better option should exist)
             Span::call_site()
         }
+    }
+
+    fn len(input: &Self::Container) -> usize {
+        input.len()
     }
 }
 
@@ -69,7 +62,7 @@ impl<S: AsRef<str>> InputMatch<[FlatTokenPat<S>]> for [FlatToken] {
         if self
             .iter()
             .zip(pat)
-            .take_while(|(t, p)| t.matches_pat(p))
+            .take_while(|(t, p)| p.matches(t))
             .count()
             == pat.len()
         {
@@ -83,7 +76,7 @@ impl<S: AsRef<str>> InputMatch<[FlatTokenPat<S>]> for [FlatToken] {
             .iter()
             .zip(pat)
             .rev()
-            .take_while(|(t, p)| t.matches_pat(p))
+            .take_while(|(t, p)| p.matches(t))
             .count()
             == pat.len()
         {

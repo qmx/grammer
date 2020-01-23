@@ -3,9 +3,10 @@ use crate::forest::{
     dynamic::{CxAndGrammar, OwnedHandle},
     Node,
 };
-use crate::input::{Input, InputMatch, Range};
+use crate::input::{Input, InputMatch};
 use crate::parser::{ParseResult, Parser};
 use crate::rule::{Rule, SepKind};
+use crate::RangeExt;
 use cyclotron::bruteforce;
 use std::cell::RefCell;
 use std::cmp::Reverse;
@@ -13,7 +14,7 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::iter;
-use std::ops::{RangeFrom, RangeTo};
+use std::ops::{Range, RangeFrom, RangeTo};
 use std::rc::Rc;
 
 #[derive(Clone, Default, Debug)]
@@ -91,15 +92,15 @@ impl ApproxForest {
     }
 }
 
-fn parse_inner<'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
+fn parse_inner<Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
     // FIXME(eddyb) group some of these in a `struct`.
     cx: &Context<Pat>,
     grammar: &crate::Grammar,
-    parser: &RefCell<Parser<'_, 'i, CxAndGrammar<'_, Pat>, I, Pat>>,
-    parse_cached: &mut dyn FnMut((IRule, Range<'i>)) -> CachedParse,
+    parser: &RefCell<Parser<'_, CxAndGrammar<'_, Pat>, I, Pat>>,
+    parse_cached: &mut dyn FnMut((IRule, Range<usize>)) -> CachedParse,
     approx_forest: &mut ApproxForest,
     rule: IRule,
-    range: Range<'i>,
+    range: Range<usize>,
 ) -> BTreeSet<usize>
 where
     I::Slice: InputMatch<Pat>,
@@ -109,7 +110,7 @@ where
         // FIXME(eddyb) find a way to avoid cloning the pattern.
         Rule::Eat(ref pat) => parser
             .borrow_mut()
-            .with_result_and_remaining(Range(range.frontiers().0), range)
+            .with_result_and_remaining(0..0, range)
             .input_consume_left(pat.clone())
             .map(|parser| parser.result().len())
             .into_iter()
@@ -129,7 +130,7 @@ where
                 left,
                 range,
             ) {
-                let (_, after_left, _) = range.split_at(left_len);
+                let (_, after_left) = range.split_at(left_len);
                 for right_len in parse_inner(
                     cx,
                     grammar,
@@ -137,11 +138,11 @@ where
                     parse_cached,
                     approx_forest,
                     right,
-                    Range(after_left),
+                    after_left,
                 ) {
                     let len = left_len + right_len;
 
-                    approx_forest.add(rule, range.start().., Some(..range.start() + len), left_len);
+                    approx_forest.add(rule, range.start.., Some(..range.start + len), left_len);
 
                     lengths.insert(len);
                 }
@@ -162,7 +163,7 @@ where
                     case,
                     range,
                 ) {
-                    approx_forest.add(rule, range.start().., Some(..range.start() + len), i);
+                    approx_forest.add(rule, range.start.., Some(..range.start + len), i);
 
                     lengths.insert(len);
                 }
@@ -219,7 +220,7 @@ where
             let mut starts = BinaryHeap::new();
             starts.push(Reverse(0));
             while let Some(Reverse(start)) = starts.pop() {
-                let range = Range(range.split_at(start).1);
+                let range = range.split_at(start).1;
                 for elem_len in parse_inner(
                     cx,
                     grammar,
@@ -229,9 +230,9 @@ where
                     elem,
                     range,
                 ) {
-                    approx_forest.add(concat_elem_tail_rule, range.start().., None, elem_len);
+                    approx_forest.add(concat_elem_tail_rule, range.start.., None, elem_len);
 
-                    let after_elem = Range(range.split_at(elem_len).1);
+                    let after_elem = range.split_at(elem_len).1;
                     let end = start + elem_len;
                     if !lengths.insert(end) {
                         // Seen this list before, avoid re-enqueing it.
@@ -251,7 +252,7 @@ where
                             starts.push(Reverse(end + sep_len));
                             approx_forest.add(
                                 concat_sep_tail_rule,
-                                after_elem.start()..,
+                                after_elem.start..,
                                 None,
                                 sep_len,
                             );
@@ -276,12 +277,12 @@ where
     }
 }
 
-fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
+fn build_sppf<'a, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
     cx: &Context<Pat>,
     grammar: &crate::Grammar,
-    parser: &RefCell<Parser<'_, 'i, CxAndGrammar<'a, Pat>, I, Pat>>,
-    mut parse_cached: impl FnMut((IRule, Range<'i>)) -> CachedParse,
-    root: Node<'i, CxAndGrammar<'a, Pat>>,
+    parser: &RefCell<Parser<'_, CxAndGrammar<'a, Pat>, I, Pat>>,
+    mut parse_cached: impl FnMut((IRule, Range<usize>)) -> CachedParse,
+    root: Node<CxAndGrammar<'a, Pat>>,
 ) where
     I::Slice: InputMatch<Pat>,
 {
@@ -289,12 +290,12 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
 
     // Unpack `rule`, knowing it matched `range`, into a simpler
     // rule, if possible. Only returns `None` for leaves.
-    let trivial_unpack_valid = |mut rule, range: Range<'_>| {
+    let trivial_unpack_valid = |mut rule, range: Range<usize>| {
         loop {
             match cx[rule] {
                     Rule::Empty | Rule::Eat(_) => return None,
 
-                    Rule::Opt(child) => if range.is_empty() {
+                    Rule::Opt(child) => if !(range.start < range.end) {
                         return None;
                     } else {
                         rule = child;
@@ -339,9 +340,9 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
             }
 
             let possibilities = || {
-                let (end, set) = &approx_forest.possibilities[&(rule, range.start()..)];
+                let (end, set) = &approx_forest.possibilities[&(rule, range.start..)];
                 if let Some(end) = end {
-                    assert_eq!(*end, ..range.end());
+                    assert_eq!(*end, ..range.end);
                 }
                 let mut possibilities = set.iter().cloned();
                 (possibilities.next().unwrap(), possibilities.next())
@@ -357,7 +358,7 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
 
                 Rule::Call(r) => {
                     let rule = grammar.rules[&r].rule;
-                    let result = parse_cached((rule, Range(full_input.split_at(range.start()).1)));
+                    let result = parse_cached((rule, full_input.split_at(range.start).1));
                     assert!(result.lengths.contains(&range.len()));
                     add_root(&result.approx_forest, rule, range);
                     continue 'roots;
@@ -372,27 +373,24 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
                         break;
                     }
 
-                    let (left_range, right_range, _) = range.split_at(split);
+                    let (left_range, right_range) = range.split_at(split);
 
-                    add_root(&approx_forest, left, Range(left_range));
+                    add_root(&approx_forest, left, left_range);
 
                     // HACK(eddyb) need a more ergonomic SPPF builder/parser API.
                     parser
                         .borrow_mut()
-                        .with_result_and_remaining(
-                            Range(right_range),
-                            Range(full_input.split_at(range.end()).1),
-                        )
+                        .with_result_and_remaining(right_range, full_input.split_at(range.end).1)
                         .forest_add_split(
                             rule,
                             Node {
                                 kind: left,
-                                range: Range(left_range),
+                                range: left_range,
                             },
                         );
 
                     rule = right;
-                    range = Range(right_range);
+                    range = right_range;
                 }
 
                 Rule::Or(ref cases) => {
@@ -404,7 +402,7 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
                     // HACK(eddyb) need a more ergonomic SPPF builder/parser API.
                     parser
                         .borrow_mut()
-                        .with_result_and_remaining(range, Range(full_input.split_at(range.end()).1))
+                        .with_result_and_remaining(range, full_input.split_at(range.end).1)
                         .forest_add_choice(rule, choice);
 
                     rule = cases[choice];
@@ -423,7 +421,7 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
             rule,
             range,
             // FIXME(eddyb) reduce the cost of this (already computed above).
-            approx_forest.possibilities[&(rule, range.start()..)]
+            approx_forest.possibilities[&(rule, range.start..)]
                 .1
                 .iter()
                 .cloned()
@@ -434,7 +432,7 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
 
         'stack: while let Some(&(rule, range, i, _any_valid)) = stack.last() {
             let (mut rule, range) = match cx[rule] {
-                Rule::Concat([_, right]) => (right, Range(range.split_at(i).1)),
+                Rule::Concat([_, right]) => (right, range.split_at(i).1),
 
                 Rule::Or(ref cases) => (cases[i], range),
 
@@ -447,9 +445,9 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
             // `Concat`/`Or` results in `continue 'stack`.
             let mut valid = loop {
                 let first_possibility = || {
-                    let (end, set) = approx_forest.possibilities.get(&(rule, range.start()..))?;
+                    let (end, set) = approx_forest.possibilities.get(&(rule, range.start..))?;
                     if let Some(end) = end {
-                        if *end != ..range.end() {
+                        if *end != ..range.end {
                             return None;
                         }
                     }
@@ -461,19 +459,16 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
                 }
 
                 let valid = match cx[rule] {
-                    Rule::Empty => range.is_empty(),
+                    Rule::Empty => !(range.start < range.end),
 
                     // FIXME(eddyb) maybe checking the pattern again would be cheaper?
-                    Rule::Eat(_) => {
-                        parse_cached((rule, Range(full_input.split_at(range.start()).1)))
-                            .lengths
-                            .contains(&range.len())
-                    }
+                    Rule::Eat(_) => parse_cached((rule, full_input.split_at(range.start).1))
+                        .lengths
+                        .contains(&range.len()),
 
                     Rule::Call(r) => {
                         let rule = grammar.rules[&r].rule;
-                        let result =
-                            parse_cached((rule, Range(full_input.split_at(range.start()).1)));
+                        let result = parse_cached((rule, full_input.split_at(range.start).1));
                         let valid = result.lengths.contains(&range.len());
                         if valid {
                             add_root(&result.approx_forest, rule, range);
@@ -498,7 +493,7 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
                     },
 
                     Rule::Opt(child) => {
-                        if range.is_empty() {
+                        if !(range.start < range.end) {
                             true
                         } else {
                             rule = child;
@@ -528,22 +523,22 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
                         Rule::Concat([left, _]) => {
                             let split = *i;
 
-                            let (left_range, right_range, _) = range.split_at(split);
+                            let (left_range, right_range) = range.split_at(split);
 
-                            add_root(&approx_forest, left, Range(left_range));
+                            add_root(&approx_forest, left, left_range);
 
                             // HACK(eddyb) need a more ergonomic SPPF builder/parser API.
                             parser
                                 .borrow_mut()
                                 .with_result_and_remaining(
-                                    Range(right_range),
-                                    Range(full_input.split_at(range.end()).1),
+                                    right_range,
+                                    full_input.split_at(range.end).1,
                                 )
                                 .forest_add_split(
                                     rule,
                                     Node {
                                         kind: left,
-                                        range: Range(left_range),
+                                        range: left_range,
                                     },
                                 );
                         }
@@ -554,10 +549,7 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
                             // HACK(eddyb) need a more ergonomic SPPF builder/parser API.
                             parser
                                 .borrow_mut()
-                                .with_result_and_remaining(
-                                    range,
-                                    Range(full_input.split_at(range.end()).1),
-                                )
+                                .with_result_and_remaining(range, full_input.split_at(range.end).1)
                                 .forest_add_choice(rule, choice);
                         }
 
@@ -567,7 +559,7 @@ fn build_sppf<'a, 'i, Pat: Clone + Ord + Hash + fmt::Debug, I: Input>(
                 }
 
                 // Try to advance this frame.
-                let mut next = match &approx_forest.possibilities[&(rule, range.start()..)].1 {
+                let mut next = match &approx_forest.possibilities[&(rule, range.start..)].1 {
                     SmallSet::One(_) => None,
                     SmallSet::Many(set) => {
                         use std::ops::Bound::*;
@@ -633,7 +625,7 @@ where
             .next()?;
         let node = Node {
             kind: cx.intern(Rule::Call(named_rule)),
-            range: Range(full_input.split_at(longest).0),
+            range: full_input.split_at(longest).0,
         };
 
         // Only construct the SPPF in case of success.

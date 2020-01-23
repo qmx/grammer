@@ -106,7 +106,7 @@ pub fn grammar<Pat: Eq + Hash + From<&'static str>>(cx: &Context<Pat>) -> Gramma
     grammar
 }
 
-type Handle<'a, 'b, 'i> = crate::forest::dynamic::Handle<'a, 'b, 'i, PMPat, TokenStream>;
+type Handle<'a, 'b> = crate::forest::dynamic::Handle<'a, 'b, PMPat, TokenStream>;
 
 pub fn parse<Pat: Eq + Hash + From<SPat>>(
     cx: &Context<Pat>,
@@ -138,7 +138,7 @@ pub fn parse<Pat: Eq + Hash + From<SPat>>(
 }
 
 fn lower_or<Pat: Eq + Hash + From<SPat>>(
-    this: Handle<'_, '_, '_>,
+    this: Handle<'_, '_>,
     cx: &Context<Pat>,
 ) -> rule::RuleWithFields {
     handle!(let { rules } = this);
@@ -148,7 +148,7 @@ fn lower_or<Pat: Eq + Hash + From<SPat>>(
 }
 
 fn lower_concat<Pat: Eq + Hash + From<SPat>>(
-    this: Handle<'_, '_, '_>,
+    this: Handle<'_, '_>,
     cx: &Context<Pat>,
 ) -> rule::RuleWithFields {
     handle!(let { rules } = this);
@@ -161,7 +161,7 @@ fn lower_concat<Pat: Eq + Hash + From<SPat>>(
 }
 
 fn lower_rule<Pat: Eq + Hash + From<SPat>>(
-    this: Handle<'_, '_, '_>,
+    this: Handle<'_, '_>,
     cx: &Context<Pat>,
 ) -> rule::RuleWithFields {
     handle!(let { rule } = this);
@@ -180,7 +180,7 @@ fn lower_rule<Pat: Eq + Hash + From<SPat>>(
 }
 
 fn lower_primary<Pat: Eq + Hash + From<SPat>>(
-    this: Handle<'_, '_, '_>,
+    this: Handle<'_, '_>,
     cx: &Context<Pat>,
 ) -> rule::RuleWithFields {
     handle!(match this {
@@ -198,7 +198,7 @@ fn lower_primary<Pat: Eq + Hash + From<SPat>>(
 }
 
 fn lower_modifier<Pat: Eq + Hash + From<SPat>>(
-    this: Handle<'_, '_, '_>,
+    this: Handle<'_, '_>,
     cx: &Context<Pat>,
     rule: rule::RuleWithFields,
 ) -> rule::RuleWithFields {
@@ -223,15 +223,15 @@ fn lower_modifier<Pat: Eq + Hash + From<SPat>>(
     })
 }
 
-fn lower_sep_kind(this: Handle<'_, '_, '_>) -> rule::SepKind {
+fn lower_sep_kind(this: Handle<'_, '_>) -> rule::SepKind {
     handle!(match this {
         {Simple:_} => rule::SepKind::Simple,
         {Trailing:_} => rule::SepKind::Trailing,
     })
 }
 
-fn lower_pattern(this: Handle<'_, '_, '_>) -> SPat {
-    fn unescape(handle: Handle<'_, '_, '_>) -> String {
+fn lower_pattern(this: Handle<'_, '_>) -> SPat {
+    fn unescape(handle: Handle<'_, '_>) -> String {
         let mut out = String::new();
         let s = match handle.source() {
             [FlatToken::Literal(lit)] => lit.to_string(),
